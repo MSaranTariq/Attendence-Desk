@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerSupabase, createAdminSupabase } from '../../../lib/supabaseServer';
 import { parseCSV, parseWorkbook, toGoogleSheetCsvUrl } from '../../../lib/parseSheet';
+import { getBusinessDay } from '../../../lib/calculateAttendance';
 
 export async function POST(request) {
   const { projectId } = await request.json();
@@ -70,9 +71,20 @@ export async function POST(request) {
     return NextResponse.json({ error: 'No valid rows found in the sheet. Check the column headers match Timestamp / User / Check-in / Category / Time.' }, { status: 400 });
   }
 
-  // Insert with the admin client (bypasses per-row RLS overhead) but scoped to this project,
-  // relying on the unique constraint to silently skip already-imported punches.
+  // Sync is authoritative: the sheet is imported in full, then the UI applies date filters.
+  const boundary = project.day_start_time.slice(0, 5);
+  const eventSummary = events.reduce((summary, event) => {
+    summary.types[event.type] = (summary.types[event.type] || 0) + 1;
+    const date = getBusinessDay(event.timestamp, boundary);
+    summary.dates.add(date);
+    return summary;
+  }, { types: {}, dates: new Set() });
   const admin = createAdminSupabase();
+  const { error: deleteErr } = await admin.from('attendance_events').delete().eq('project_id', projectId);
+  if (deleteErr) {
+    return NextResponse.json({ error: deleteErr.message }, { status: 500 });
+  }
+
   const rows = events.map(e => ({
     project_id: projectId,
     employee: e.employee,
@@ -98,5 +110,11 @@ export async function POST(request) {
     .update({ last_synced_at: new Date().toISOString() })
     .eq('id', projectId);
 
-  return NextResponse.json({ success: true, eventsProcessed: rows.length });
+  const dates = [...eventSummary.dates].sort();
+  return NextResponse.json({
+    success: true,
+    eventsProcessed: rows.length,
+    eventTypes: eventSummary.types,
+    dateRange: dates.length ? { from: dates[0], to: dates[dates.length - 1] } : null,
+  });
 }

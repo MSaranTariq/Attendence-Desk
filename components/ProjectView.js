@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../lib/supabaseClient';
@@ -8,7 +8,20 @@ import { calculateAttendance } from '../lib/calculateAttendance';
 import AttendanceTable from './AttendanceTable';
 
 function toDateKey(d) {
-  return d.toISOString().slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Karachi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function formatPunches(row) {
+  if (row.sessions?.length) return row.sessions.map(session => `${session.checkIn || '—'} - ${session.checkOut || '—'}`).join('; ');
+  if (row.checkIn || row.checkOut) return `${row.checkIn || '—'} - ${row.checkOut || '—'}`;
+  return '';
 }
 
 export default function ProjectView({ project, rawEvents }) {
@@ -28,13 +41,16 @@ export default function ProjectView({ project, rawEvents }) {
   const [employeeList, setEmployeeList] = useState(project.employee_list || []);
   const [newEmployee, setNewEmployee] = useState('');
   const [exportRange, setExportRange] = useState('current');
+  const [extracting, setExtracting] = useState(false);
 
-  // Default filter: last 7 days
+  // Default filter: expand to the complete range currently loaded.
   const todayKey = toDateKey(new Date());
+  const monthStartKey = `${todayKey.slice(0, 8)}01`;
   const sevenDaysAgoKey = toDateKey(new Date(Date.now() - 7 * 86400000));
-  const [fromDate, setFromDate] = useState(sevenDaysAgoKey);
+  const thirtyDaysAgoKey = toDateKey(new Date(Date.now() - 30 * 86400000));
+  const [fromDate, setFromDate] = useState(monthStartKey);
   const [toDateVal, setToDateVal] = useState(todayKey);
-  const [exportFromDate, setExportFromDate] = useState(sevenDaysAgoKey);
+  const [exportFromDate, setExportFromDate] = useState(monthStartKey);
   const [exportToDate, setExportToDate] = useState(todayKey);
 
   const events = useMemo(() => rawEvents.map(e => ({
@@ -53,13 +69,31 @@ export default function ProjectView({ project, rawEvents }) {
     [allRows, fromDate, toDateVal]
   );
 
+  useEffect(() => {
+    const syncedDates = allRows.map(row => row.date).sort();
+    if (syncedDates.length === 0) return;
+    setFromDate(syncedDates[0]);
+    setToDateVal(syncedDates[syncedDates.length - 1]);
+    setExportFromDate(syncedDates[0]);
+    setExportToDate(syncedDates[syncedDates.length - 1]);
+  }, [allRows]);
+
+  function showAllHistoricalDays() {
+    const earliestDate = allRows.reduce(
+      (earliest, row) => row.date < earliest ? row.date : earliest,
+      todayKey
+    );
+    setFromDate(earliestDate);
+    setToDateVal(todayKey);
+  }
+
   function exportToSheets() {
     const rowsToExport = exportRange === 'all'
       ? allRows
       : exportRange === 'custom'
         ? allRows.filter(row => row.date >= exportFromDate && row.date <= exportToDate)
         : filteredRows;
-    const headers = ['Date', 'Employee', 'Check-in', 'Check-out', 'Break', 'Working hours'];
+    const headers = ['Date', 'Employee', 'Check-in - Check-out', 'Break', 'Working hours'];
     const csvCell = value => {
       const text = value == null ? '' : String(value);
       return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -67,8 +101,7 @@ export default function ProjectView({ project, rawEvents }) {
     const csv = [headers, ...rowsToExport.map(row => [
       row.date,
       row.employee,
-      row.checkIn || '',
-      row.checkOut || '',
+      formatPunches(row),
       row.break,
       row.workingHours,
     ])].map(row => row.map(csvCell).join(',')).join('\r\n');
@@ -107,6 +140,25 @@ export default function ProjectView({ project, rawEvents }) {
     if (response.ok) {
       setSourceFile(null);
       router.refresh();
+    }
+  }
+
+  async function extractEmployeesFromSource() {
+    setExtracting(true);
+    setSettingsMsg(null);
+    try {
+      const formData = new FormData();
+      if (sourceType === 'google_sheet') formData.append('sheetUrl', sheetUrl);
+      if (sourceType === 'file_upload' && sourceFile) formData.append('file', sourceFile);
+      const response = await fetch('/api/sheet-preview', { method: 'POST', body: formData });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not extract employee names');
+      setEmployeeList(result.names);
+      setSettingsMsg('Employee names extracted. Save people order to apply them.');
+    } catch (err) {
+      setSettingsMsg(`Error: ${err.message}`);
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -169,7 +221,15 @@ export default function ProjectView({ project, rawEvents }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Sync failed');
-      setSyncMsg(`Synced ${data.eventsProcessed} events.`);
+      const range = data.dateRange ? ` (${data.dateRange.from} to ${data.dateRange.to})` : '';
+      const checkouts = data.eventTypes?.['check-out'] || 0;
+      setSyncMsg(`Synced ${data.eventsProcessed} events${range}. Check-outs imported: ${checkouts}.`);
+      if (data.dateRange) {
+        setFromDate(data.dateRange.from);
+        setToDateVal(data.dateRange.to);
+        setExportFromDate(data.dateRange.from);
+        setExportToDate(data.dateRange.to);
+      }
       router.refresh();
     } catch (err) {
       setSyncMsg(`Error: ${err.message}`);
@@ -276,7 +336,12 @@ export default function ProjectView({ project, rawEvents }) {
             </button>
           </div>
           <div>
-            <button className="btn-secondary btn" onClick={() => { setFromDate('0000-01-01'); setToDateVal('9999-12-31'); }}>
+            <button className="btn-secondary btn" onClick={() => { setFromDate(thirtyDaysAgoKey); setToDateVal(todayKey); }}>
+              Last 30 days
+            </button>
+          </div>
+          <div>
+            <button className="btn-secondary btn" onClick={showAllHistoricalDays}>
               All available
             </button>
           </div>
@@ -317,6 +382,10 @@ export default function ProjectView({ project, rawEvents }) {
                 Remove link
               </button>
             )}
+            <button className="btn-secondary btn" onClick={extractEmployeesFromSource}
+              disabled={extracting || (sourceType === 'google_sheet' ? !sheetUrl.trim() : !sourceFile)}>
+              {extracting ? 'Extracting…' : sourceType === 'google_sheet' ? 'Extract from sheet' : 'Extract from file'}
+            </button>
           </div>
         </div>
         <div className="field">

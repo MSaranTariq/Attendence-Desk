@@ -15,16 +15,20 @@ export default async function ProjectPage({ params }) {
 
   if (!project) notFound();
 
-  // Pull enough history for a 7-day (or wider) view; adjust the window as needed.
-  const since = new Date();
-  since.setDate(since.getDate() - 35);
+  const pageSize = 1000;
+  const events = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data: page, error } = await supabase
+      .from('attendance_events')
+      .select('*')
+      .eq('project_id', project.id)
+      .order('event_timestamp', { ascending: true })
+      .range(offset, offset + pageSize - 1);
 
-  const { data: events } = await supabase
-    .from('attendance_events')
-    .select('*')
-    .eq('project_id', project.id)
-    .gte('event_timestamp', since.toISOString())
-    .order('event_timestamp', { ascending: true });
+    if (error) throw new Error(`Could not load attendance events: ${error.message}`);
+    events.push(...(page || []));
+    if (!page || page.length < pageSize) break;
+  }
 
-  return <ProjectView project={project} rawEvents={events || []} />;
+  return <ProjectView project={project} rawEvents={events} />;
 }

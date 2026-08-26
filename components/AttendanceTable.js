@@ -24,8 +24,7 @@ export default function AttendanceTable({ rows, employeeOrder }) {
               <thead>
                 <tr>
                   <th>Employee</th>
-                  <th>Check-in</th>
-                  <th>Check-out</th>
+                  <th>Check-in - Check-out</th>
                   <th>Break (HH:MM:SS)</th>
                   <th>Working hours</th>
                 </tr>
@@ -37,8 +36,7 @@ export default function AttendanceTable({ rows, employeeOrder }) {
                   return (
                     <tr key={name} className={absent ? 'attendance-absent' : ''}>
                       <td>{name}</td>
-                      <td>{r?.checkIn || '—'}</td>
-                      <td>{r?.checkOut || '—'}</td>
+                      <td>{r ? formatPunches(r) : '—'}</td>
                       <td>{r?.break || '—'}</td>
                       <td>{r ? r.workingHours : <span className="absent-label">Absent</span>}</td>
                     </tr>
@@ -53,7 +51,13 @@ export default function AttendanceTable({ rows, employeeOrder }) {
   );
 }
 
+function formatPunches(row) {
+  if (row.sessions?.length) return row.sessions.map(session => `${session.checkIn || '—'} - ${session.checkOut || '—'}`).join('; ');
+  if (row.checkIn || row.checkOut) return `${row.checkIn || '—'} - ${row.checkOut || '—'}`;
+  return '—';
+}
+
 function formatDate(dateKey) {
-  const d = new Date(dateKey + 'T00:00:00');
-  return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const d = new Date(`${dateKey}T00:00:00Z`);
+  return d.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
