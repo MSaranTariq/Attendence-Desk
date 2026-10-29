@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../lib/supabaseClient';
 import { calculateAttendance } from '../lib/calculateAttendance';
+import { buildAttendanceSheetRows } from '../lib/attendanceExport';
 import AttendanceTable from './AttendanceTable';
 
 function toDateKey(d) {
@@ -16,12 +17,6 @@ function toDateKey(d) {
   }).formatToParts(d);
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
-}
-
-function formatPunches(row) {
-  if (row.sessions?.length) return row.sessions.map(session => `${session.checkIn || '—'} - ${session.checkOut || '—'}`).join('; ');
-  if (row.checkIn || row.checkOut) return `${row.checkIn || '—'} - ${row.checkOut || '—'}`;
-  return '';
 }
 
 export default function ProjectView({ project, rawEvents }) {
@@ -41,6 +36,7 @@ export default function ProjectView({ project, rawEvents }) {
   const [employeeList, setEmployeeList] = useState(project.employee_list || []);
   const [newEmployee, setNewEmployee] = useState('');
   const [exportRange, setExportRange] = useState('current');
+  const [exportMsg, setExportMsg] = useState(null);
   const [extracting, setExtracting] = useState(false);
 
   // Default filter: expand to the complete range currently loaded.
@@ -69,6 +65,12 @@ export default function ProjectView({ project, rawEvents }) {
     [allRows, fromDate, toDateVal]
   );
 
+  const rowsToExport = exportRange === 'all'
+    ? allRows
+    : exportRange === 'custom'
+      ? allRows.filter(row => row.date >= exportFromDate && row.date <= exportToDate)
+      : filteredRows;
+
   useEffect(() => {
     const syncedDates = allRows.map(row => row.date).sort();
     if (syncedDates.length === 0) return;
@@ -87,30 +89,21 @@ export default function ProjectView({ project, rawEvents }) {
     setToDateVal(todayKey);
   }
 
-  function exportToSheets() {
-    const rowsToExport = exportRange === 'all'
-      ? allRows
-      : exportRange === 'custom'
-        ? allRows.filter(row => row.date >= exportFromDate && row.date <= exportToDate)
-        : filteredRows;
-    const headers = ['Date', 'Employee', 'Check-in - Check-out', 'Break', 'Working hours'];
+  function exportToCsv() {
+    setExportMsg(null);
+    const { values } = buildAttendanceSheetRows(rowsToExport, employeeList);
     const csvCell = value => {
       const text = value == null ? '' : String(value);
-      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
     };
-    const csv = [headers, ...rowsToExport.map(row => [
-      row.date,
-      row.employee,
-      formatPunches(row),
-      row.break,
-      row.workingHours,
-    ])].map(row => row.map(csvCell).join(',')).join('\r\n');
+    const csv = values.map(row => row.map(csvCell).join(',')).join('\r\n');
     const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
     link.download = `${project.name.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'attendance'}-export.csv`;
     link.click();
     URL.revokeObjectURL(url);
+    setExportMsg(`Exported ${new Set(rowsToExport.map(row => row.date)).size} day(s) to CSV.`);
   }
 
   async function handleRemoveSheetUrl() {
@@ -259,21 +252,17 @@ export default function ProjectView({ project, rawEvents }) {
           <p className="page-subtitle">Attendance records, sync status, and project controls.</p>
         </div>
         <div className="workspace-actions">
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <select className="input" value={exportRange} onChange={e => setExportRange(e.target.value)}
               aria-label="Export range" style={{ width: 170 }}>
               <option value="current">Current date filter</option>
               <option value="all">All available days</option>
               <option value="custom">Custom date range</option>
             </select>
-            <button className="btn-secondary btn" onClick={exportToSheets}
-              disabled={(exportRange === 'all'
-                ? allRows
-                : exportRange === 'custom'
-                  ? allRows.filter(row => row.date >= exportFromDate && row.date <= exportToDate)
-                  : filteredRows).length === 0
+            <button className="btn-secondary btn" onClick={exportToCsv}
+              disabled={rowsToExport.length === 0
                 || (exportRange === 'custom' && exportFromDate > exportToDate)}>
-              Export to Sheets
+              Export to CSV
             </button>
           </div>
           {exportRange === 'custom' && (
@@ -303,8 +292,11 @@ export default function ProjectView({ project, rawEvents }) {
         </button>
       </div>
 
-      {activeTab === 'attendance' && syncMsg && (
-        <div className="card" style={{ marginBottom: 16, fontSize: 14 }}>{syncMsg}</div>
+      {activeTab === 'attendance' && (syncMsg || exportMsg) && (
+        <div className="card" style={{ marginBottom: 16, fontSize: 14 }}>
+          {syncMsg && <p style={{ margin: exportMsg ? '0 0 8px' : 0 }}>{syncMsg}</p>}
+          {exportMsg && <p style={{ margin: 0 }}>{exportMsg}</p>}
+        </div>
       )}
 
       {activeTab === 'attendance' && <div className="card" style={{ marginBottom: 20 }}>

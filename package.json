@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:calc": "node test/run_test.js"
+    "test:calc": "node test/run_test.js",
+    "test:export": "node test/attendance_export_test.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.1",
